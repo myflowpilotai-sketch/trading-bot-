@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS market_data (id INTEGER PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, timestamp TEXT NOT NULL, open REAL, high REAL, low REAL, close REAL, volume REAL, UNIQUE(symbol,timeframe,timestamp));
+CREATE TABLE IF NOT EXISTS signals (id TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL, direction TEXT NOT NULL, entry REAL, stop REAL, target REAL, rr REAL, reason TEXT, status TEXT, result TEXT, timestamp TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS signal_events (id INTEGER PRIMARY KEY, signal_id TEXT NOT NULL, event TEXT NOT NULL, timestamp TEXT NOT NULL, payload TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS paper_trades (id TEXT PRIMARY KEY, signal_id TEXT NOT NULL, direction TEXT NOT NULL, entry REAL, stop REAL, target REAL, opened_at TEXT, closed_at TEXT, pnl_r REAL, status TEXT);
+CREATE TABLE IF NOT EXISTS backtest_runs (id TEXT PRIMARY KEY, symbol TEXT, timeframe TEXT, started_at TEXT, finished_at TEXT, win_rate REAL, expectancy_r REAL, profit_factor REAL, max_drawdown REAL, average_r REAL);
+CREATE TABLE IF NOT EXISTS backtest_trades (id TEXT PRIMARY KEY, run_id TEXT NOT NULL, timestamp TEXT, direction TEXT, entry REAL, stop REAL, target REAL, result_r REAL);
