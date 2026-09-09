@@ -1,100 +1,12 @@
-import express from 'express';
-import cors from 'cors';
-import { WebSocketServer } from 'ws';
-import http from 'http';
-
-const app = express();
-app.use(cors());
-app.use(express.json({ limit: '100kb' }));
-
-const PORT = process.env.PORT || 8080;
-const WEBHOOK_SECRET = process.env.TRADINGVIEW_WEBHOOK_SECRET || '';
-const startedAt = Date.now();
-
-let state = {
-  symbol: 'XAUUSD',
-  timeframe: 'M5',
-  mode: 'PAPER',
-  live: false,
-  price: null,
-  updatedAt: null,
-  signal: null,
-  positions: [],
-  history: []
-};
-
-function broadcast(message) {
-  const payload = JSON.stringify(message);
-  for (const client of wss.clients) {
-    if (client.readyState === 1) client.send(payload);
-  }
-}
-
-function normalizeSignal(body) {
-  const side = String(body.side || body.direction || '').toUpperCase();
-  if (!['LONG', 'SHORT'].includes(side)) throw new Error('side must be LONG or SHORT');
-  const entry = Number(body.entry);
-  const sl = Number(body.sl);
-  const tp = Number(body.tp);
-  if (![entry, sl, tp].every(Number.isFinite)) throw new Error('entry, sl and tp are required');
-  return {
-    id: `SIG-${Date.now()}`,
-    symbol: body.symbol || 'XAUUSD',
-    timeframe: body.timeframe || 'M5',
-    side,
-    entry,
-    sl,
-    tp,
-    rr: Number(body.rr) || Math.abs((tp - entry) / (entry - sl)),
-    regimeH4: body.regimeH4 || null,
-    biasH1: body.biasH1 || null,
-    bosM15: Boolean(body.bosM15),
-    confirmedM5: Boolean(body.confirmedM5),
-    atrRatio: Number(body.atrRatio) || null,
-    session: body.session ?? true,
-    timestamp: new Date().toISOString()
-  };
-}
-
-app.get('/health', (_req, res) => res.json({ ok: true, mode: state.mode, uptime: Date.now() - startedAt }));
-app.get('/api/state', (_req, res) => res.json(state));
-app.get('/api/signals', (_req, res) => res.json({ data: state.signal ? [state.signal] : [] }));
-app.get('/api/trades', (_req, res) => res.json({ data: state.history }));
-
-app.post('/webhook/tradingview', (req, res) => {
-  if (WEBHOOK_SECRET && req.get('x-webhook-secret') !== WEBHOOK_SECRET) {
-    return res.status(401).json({ ok: false, error: 'unauthorized' });
-  }
-  try {
-    const signal = normalizeSignal(req.body);
-    state.signal = signal;
-    state.updatedAt = signal.timestamp;
-    broadcast({ type: 'signal', data: signal });
-    return res.status(202).json({ ok: true, signal });
-  } catch (error) {
-    return res.status(400).json({ ok: false, error: error.message });
-  }
-});
-
-app.post('/api/market', (req, res) => {
-  const price = Number(req.body.price);
-  if (!Number.isFinite(price)) return res.status(400).json({ ok: false, error: 'price required' });
-  state.price = price;
-  state.updatedAt = new Date().toISOString();
-  broadcast({ type: 'market', data: { symbol: state.symbol, price, timestamp: state.updatedAt } });
-  res.json({ ok: true });
-});
-
-app.post('/api/trades', (req, res) => {
-  const trade = { id: `TRD-${Date.now()}`, ...req.body, timestamp: new Date().toISOString() };
-  state.history.unshift(trade);
-  state.history = state.history.slice(0, 500);
-  broadcast({ type: 'trade', data: trade });
-  res.status(201).json({ ok: true, trade });
-});
-
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
-wss.on('connection', socket => socket.send(JSON.stringify({ type: 'state', data: state })));
-
-server.listen(PORT, () => console.log(`Live terminal backend listening on ${PORT}`));
+import express from 'express';import cors from 'cors';import {WebSocketServer} from 'ws';import http from 'http';import {OandaProvider} from './market/oanda.js';import {updateCandle,validateCandles} from './market/candles.js';import {analyze} from './signals/engine.js';
+const app=express();app.use(cors());app.use(express.json({limit:'100kb'}));const PORT=process.env.PORT||8080;const STALE_MS=Number(process.env.STALE_MS||5000);const providerEnabled=String(process.env.OANDA_ENABLED||'false').toLowerCase()==='true';const provider=new OandaProvider({env:process.env.OANDA_ENV||'practice',accountId:process.env.OANDA_ACCOUNT_ID,token:process.env.OANDA_TOKEN});
+const state={symbol:'XAUUSD',timeframe:'M5',mode:'LIVE_ANALYSIS',connection:'DISCONNECTED',source:providerEnabled&&provider.configured?'OANDA':'NO LIVE DATA SOURCE',price:null,bid:null,ask:null,lastTick:null,candles:[],frames:{},trades:[],signal:null,quality:{ok:true,message:'No provider connected'}};const clients=new Set();let lastSignalKey=null;let streamTask=null;
+const broadcast=(type,data)=>{const p=JSON.stringify({type,data});for(const ws of clients)if(ws.readyState===1)ws.send(p)};const status=(connection,source=state.source)=>{state.connection=connection;state.source=source;broadcast('status',{status:connection,source})};
+function staleCheck(){if(!state.lastTick)return;const age=Date.now()-new Date(state.lastTick).getTime();if(age>STALE_MS&&state.connection==='LIVE')status('STALE DATA',state.source)}setInterval(staleCheck,1000);
+async function loadHistory(){if(!providerEnabled||!provider.configured){state.quality={ok:false,message:'No live market provider configured'};status('DISCONNECTED','NO LIVE DATA SOURCE');return}try{const [m5,h1,h4,m15]=await Promise.all([provider.getHistoricalCandles('M5',1000),provider.getHistoricalCandles('H1',500),provider.getHistoricalCandles('H4',500),provider.getHistoricalCandles('M15',500)]);state.candles=m5;state.frames={M5:m5,M15:m15,H1:h1,H4:h4};state.quality=validateCandles(m5);state.price=m5.at(-1)?.close||null;broadcast('snapshot',state);const signal=analyze(state.frames);if(signal&&signal.status!=='NO_SIGNAL')emitSignal(signal)}catch(e){state.quality={ok:false,message:e.message};status('DISCONNECTED','OANDA ERROR');}}
+function emitSignal(signal){const key=`${state.symbol}|${state.timeframe}|${signal.direction}|${signal.timestamp}`;if(key===lastSignalKey)return;lastSignalKey=key;state.signal={...signal,id:`SIG-${Date.now()}`,symbol:state.symbol,timeframe:state.timeframe,mode:'LIVE_ANALYSIS'};broadcast('signal',state.signal);console.log('SIGNAL_CREATED',state.signal.id)}
+function onPrice(t){state.price=t.mid;state.bid=t.bid;state.ask=t.ask;state.lastTick=t.timestamp;status('LIVE',providerEnabled?'OANDA':'NO LIVE DATA SOURCE');broadcast('tick',t);const next=updateCandle(state.candles.at(-1),t,'M5');const prev=state.candles.at(-1);if(!prev||next.time!==prev.time)console.log('CANDLE_UPDATED',next.time);state.candles=prev&&prev.time===next.time?[...state.candles.slice(0,-1),next]:[...state.candles,next];state.frames.M5=state.candles;state.quality=validateCandles(state.candles);broadcast('candle',next);broadcast('quality',state.quality)}
+async function startProvider(){if(!providerEnabled||!provider.configured){status('DISCONNECTED','NO LIVE DATA SOURCE');return}await loadHistory();const run=async()=>{try{await provider.streamPrices(onPrice,s=>status(s,'OANDA'));}catch(e){if(e.name!=='AbortError'){console.error('MARKET_DATA_DISCONNECTED',e.message);status('DISCONNECTED','OANDA ERROR');setTimeout(run,2000)}}};streamTask=run();}
+app.get('/health',(_req,res)=>res.json({ok:true,connection:state.connection,source:state.source,providerConfigured:provider.configured,uptime:process.uptime()}));app.get('/api/state',(_req,res)=>res.json(state));app.get('/api/candles',(req,res)=>{const tf=req.query.timeframe||'M5';res.json({symbol:state.symbol,timeframe:tf,data:state.frames[tf]||state.candles})});app.get('/api/signals',(_req,res)=>res.json({data:state.signal?[state.signal]:[]}));
+app.post('/webhook/tradingview',(req,res)=>{const secret=process.env.TRADINGVIEW_WEBHOOK_SECRET||'';if(!secret||req.get('x-webhook-secret')!==secret)return res.status(401).json({ok:false,error:'unauthorized'});const b=req.body||{};if(b.symbol!=='XAUUSD'||!['M5','M15','H1','H4'].includes(b.timeframe))return res.status(400).json({ok:false,error:'invalid symbol/timeframe'});const ts=Date.parse(b.timestamp||'');if(!Number.isFinite(ts)||Math.abs(Date.now()-ts)>120000)return res.status(400).json({ok:false,error:'invalid timestamp'});const id=`TV-${b.event_id||`${b.symbol}-${b.timeframe}-${ts}-${b.direction}`}`;if(state.signal?.id===id)return res.status(200).json({ok:true,deduplicated:true});state.signal={...b,id,mode:'LIVE_ANALYSIS'};broadcast('signal',state.signal);console.log('WEBHOOK_RECEIVED',id);return res.status(202).json({ok:true,id})});
+const server=http.createServer(app);const wss=new WebSocketServer({server,path:'/ws'});wss.on('connection',ws=>{clients.add(ws);ws.send(JSON.stringify({type:'snapshot',data:state}));ws.on('close',()=>clients.delete(ws))});server.listen(PORT,()=>{console.log(`LIVE market backend listening on ${PORT}`);startProvider()});
