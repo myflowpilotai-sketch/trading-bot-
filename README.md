@@ -1,40 +1,61 @@
-# XAU Signal Engine
+# XAUUSD Live Market Analysis
 
-Dashboard web pour le projet **XAU Signal Engine** : analyse multi-timeframe, signaux LONG/SHORT, graphique, paper trading et statistiques.
+The GitHub Pages frontend is now an honest market-analysis UI: it does **not** generate random prices and it does not label simulated data as LIVE.
 
-## Important
+## Architecture
 
-Cette version est une **interface front-end / paper trading**. Les prix, positions et statistiques actuellement affichés dans la démo sont des données d'interface et ne doivent pas être considérés comme des performances réelles.
+`OANDA v20 / provider adapter -> Market service -> incremental candles -> indicator engine -> multi-timeframe signal engine -> WebSocket -> Lightweight Charts UI`
 
-Aucun ordre n'est envoyé à un broker.
+TradingView Lightweight Charts is used only as the charting engine. It does not provide market data itself, so the server-side provider is responsible for historical OHLC and realtime pricing. TradingView documents this datafeed separation and realtime subscription model. 
 
-## Fonctionnalités UI
+## Current provider
 
-- Dashboard XAUUSD M5
-- Graphique chandeliers avec Entry / SL / TP
-- Marquage visuel BOS M15 et signal LONG/SHORT
-- Conditions H4 / H1 / M15 / M5
-- Historique des signaux
-- Vue Paper Trading
-- Statistiques et scénarios RR
-- Page Configuration
-- Responsive desktop/mobile
+The first real provider adapter is OANDA v20 for `XAU_USD`. OANDA documents REST historical candles and an account pricing stream, with separate practice and live endpoints. Credentials remain server-side.
 
-## Mise en ligne avec GitHub Pages
+Set `server/.env` from `.env.example`:
 
-1. Ouvrir **Settings → Pages** dans ce dépôt.
-2. Dans **Build and deployment**, choisir **Deploy from a branch**.
-3. Sélectionner `main` et `/ (root)`.
-4. Enregistrer.
+- `OANDA_ENABLED=true`
+- `OANDA_ENV=practice` for testing, or `live` for a production account
+- `OANDA_ACCOUNT_ID=...`
+- `OANDA_TOKEN=...`
+- `TRADINGVIEW_WEBHOOK_SECRET=...`
+- `STALE_MS=5000`
 
-Le site sera alors servi par GitHub Pages.
+If the provider is not configured, the frontend deliberately shows `NO LIVE DATA SOURCE` / `DISCONNECTED`.
 
-## Prochaine étape : données réelles
+## Frontend deployment
 
-Pour passer de la maquette au système complet, il faut connecter :
+The Pages site can point at a deployed backend by changing `window.MARKET_API_BASE` and `window.MARKET_WS_BASE` in `index.html`. Do not put OANDA tokens or webhook secrets in the frontend.
 
-`TradingView Pine v6 → Webhook HTTPS → API backend → PostgreSQL → WebSocket/API → Dashboard`
+## Backend
 
-Le backend devra valider le secret applicatif, le symbole, la direction, le timestamp, dédupliquer les signaux et enregistrer les événements avant de les pousser au dashboard.
+```bash
+cd server
+npm install
+npm run check
+npm test
+npm start
+```
 
-Le projet d'origine exige également des tests anti-repaint, des backtests reproductibles et une séparation in-sample/out-of-sample avant toute interprétation de performance.
+WebSocket endpoint: `/ws`
+Health: `/health`
+State: `/api/state`
+Candles: `/api/candles?timeframe=M5`
+Webhook: `POST /webhook/tradingview`
+
+## Honest status
+
+- LIVE chart: **implemented, requires deployed backend + valid provider credentials**
+- Simulated LIVE: **removed**
+- Historical candles: **implemented through provider adapter**
+- Incremental candle updates: **implemented**
+- Connection/stale states: **implemented**
+- Data quality monitor: **implemented**
+- Modular indicators: **implemented (EMA/ATR/RSI primitives)**
+- Multi-timeframe signal engine: **implemented as deterministic baseline**
+- Paper trading: **UI retained as secondary module; execution engine is not yet wired to persistence**
+- Backtest: **schema/UI placeholder; deterministic engine still to be completed**
+- Webhook validation/deduplication: **implemented**
+- Persistent database: **schema prepared; runtime persistence still to be wired**
+
+No production-live claim is made until a real provider backend is deployed and observed receiving real ticks.
